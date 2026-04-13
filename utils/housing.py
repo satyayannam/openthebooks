@@ -65,6 +65,21 @@ def _coerce_ratio(series: pd.Series) -> pd.Series:
     return s
 
 
+def _clean_state_series(series: pd.Series) -> pd.Series:
+    s = series.astype(str).str.strip()
+    s = s.replace(
+        {
+            "": np.nan,
+            "nan": np.nan,
+            "none": np.nan,
+            "null": np.nan,
+            "na": np.nan,
+            "n/a": np.nan,
+        }
+    )
+    return s
+
+
 def _prep(df: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame:
     df2 = df.copy()
     df2 = df2.rename(
@@ -94,6 +109,9 @@ def _prep(df: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame:
     for col in ["hpi_growth", "income_growth", "gap"]:
         if col in df2.columns:
             df2[col] = _coerce_ratio(df2[col])
+
+    if "state" in df2.columns:
+        df2["state"] = _clean_state_series(df2["state"])
 
     if "gap_rank" in df2.columns:
         df2["gap_rank"] = pd.to_numeric(df2["gap_rank"], errors="coerce")
@@ -193,30 +211,30 @@ def _palette(name: str) -> list[str]:
 def render_housing_dashboard(df: pd.DataFrame) -> None:
     schema = detect_housing_schema(df)
     needed = {"state", "hpi", "income", "gap"}
-    if "State" in df.columns:
-        state_series = df["State"].replace("", np.nan)
-        if state_series.notna().any():
-            schema["state"] = "State"
     if not needed.issubset(schema.keys()):
         st.info("Housing dashboard needs State, HPI_Growth, Income_Growth, and Affordability_Gap columns.")
         return
 
     data = _prep(df, schema)
     if "worksheet" in data.columns:
-        state_series = data["state"].replace("", np.nan)
-        gap_series = data["gap"].replace("", np.nan)
+        state_series = _clean_state_series(data["state"])
+        gap_series = pd.to_numeric(data["gap"], errors="coerce")
         scored = (
             data.assign(
+                _pair_ok=state_series.notna() & gap_series.notna(),
                 _state_ok=state_series.notna(),
                 _gap_ok=gap_series.notna(),
             )
-            .groupby("worksheet", dropna=False)[["_state_ok", "_gap_ok"]]
+            .groupby("worksheet", dropna=False)[["_pair_ok", "_state_ok", "_gap_ok"]]
             .sum()
         )
-        scored["score"] = scored["_state_ok"] + scored["_gap_ok"]
+        scored["score"] = (scored["_pair_ok"] * 1000000) + (scored["_state_ok"] * 1000) + scored["_gap_ok"]
         if not scored.empty:
             best_ws = scored.sort_values("score", ascending=False).index[0]
             data = data[data["worksheet"] == best_ws].copy()
+    data["state"] = _clean_state_series(data["state"])
+    data["gap"] = pd.to_numeric(data["gap"], errors="coerce")
+    data = data[data["state"].str.lower().ne("grand total")]
     data = data.dropna(subset=["state", "gap"])
     if data.empty:
         st.warning("No rows with valid State and Affordability_Gap values after cleaning.")
