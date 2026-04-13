@@ -132,6 +132,34 @@ def _prep(df: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame:
     return df2
 
 
+def _fallback_clean_from_schema(df: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame:
+    data = pd.DataFrame(
+        {
+            "state": df[schema["state"]],
+            "hpi_growth": _coerce_ratio(df[schema["hpi"]]),
+            "income_growth": _coerce_ratio(df[schema["income"]]),
+            "gap": _coerce_ratio(df[schema["gap"]]),
+        }
+    )
+    data["state"] = _clean_state_series(data["state"])
+    data["gap"] = pd.to_numeric(data["gap"], errors="coerce")
+    data = data[data["state"].str.lower().ne("grand total")]
+    data = data.dropna(subset=["state", "gap"])
+    if "gap_bucket" not in data.columns:
+        def bucket(g):
+            if pd.isna(g):
+                return None
+            if g < 0.30:
+                return "Lower (<30%)"
+            if g < 0.50:
+                return "Moderate (30-49%)"
+            if g < 0.70:
+                return "High (50-69%)"
+            return "Severe (70%+)"
+        data["gap_bucket"] = data["gap"].apply(bucket)
+    return data
+
+
 def _state_abbrev(state: str) -> str | None:
     if not isinstance(state, str):
         return None
@@ -236,6 +264,8 @@ def render_housing_dashboard(df: pd.DataFrame) -> None:
     data["gap"] = pd.to_numeric(data["gap"], errors="coerce")
     data = data[data["state"].str.lower().ne("grand total")]
     data = data.dropna(subset=["state", "gap"])
+    if data.empty:
+        data = _fallback_clean_from_schema(df, schema)
     if data.empty:
         st.warning("No rows with valid State and Affordability_Gap values after cleaning.")
         return
